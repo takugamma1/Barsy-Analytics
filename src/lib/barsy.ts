@@ -2,13 +2,17 @@
  * Barsy API client — read-only access to СКЛАД → ЗАРЕЖДАНИЯ data.
  *
  * Calling convention (same as the bridge at bridge.habits.bg):
- *   GET/POST {BARSY_BASE_URL}/endpoints/json/{Method}?bid={BARSY_BID}
- *   HTTP Basic Auth with BARSY_USER / BARSY_PASS.
+ *   POST {BARSY_BASE_URL}/endpoints/json/{Method}?bid={BARSY_BID}
+ *   HTTP Basic Auth with BARSY_USER / BARSY_PASS, JSON body.
  *
- * Methods used:
- *   STORELOADS_getlist — list of warehouse loads (зареждания)
- *   STORELOADS_get     — a single load incl. its item rows
- *   SUPPLIERS_getlist  — supplier catalog
+ * Data source: Reports_storeloads_details (СКЛАД → ЗАРЕЖДАНИЯ → ВСИЧКИ,
+ * "Списък на доставките") with action_type "values" — returns one row per
+ * article per load, incl. supplier, quantity, and delivery prices.
+ * Verified against the live install on 2026-07-02:
+ *   - filters.ref_date = [from, to] filters by DOCUMENT date (doc_date)
+ *   - `columns` selects fields; `page_num`/`rows` paginate (`total` = page count)
+ *   - primary currency is EUR; *_sec_curr columns are BGN (×1.95583)
+ * Suppliers come from Suppliers_getlist ({supplier_id, supplier_name}).
  */
 
 const BASE = () => process.env.BARSY_BASE_URL || "";
@@ -30,10 +34,6 @@ export class BarsyError extends Error {
   }
 }
 
-/**
- * Low-level call. Barsy getlist methods accept `filters`, `start`, `length`
- * as JSON in a POST body (query-string style also works, but JSON is cleaner).
- */
 export async function barsyCall(method: string, params: Record<string, unknown> = {}): Promise<unknown> {
   const url = `${BASE()}/endpoints/json/${method}?bid=${BID()}`;
   const res = await fetch(url, {
@@ -43,7 +43,6 @@ export async function barsyCall(method: string, params: Record<string, unknown> 
       "Content-Type": "application/json",
     },
     body: JSON.stringify(params),
-    // Vercel: cache at the route level, not here
     cache: "no-store",
   });
   const text = await res.text();
@@ -53,71 +52,28 @@ export async function barsyCall(method: string, params: Record<string, unknown> 
   try {
     return JSON.parse(text);
   } catch {
-    throw new BarsyError(`Barsy ${method} returned non-JSON`, res.status, text);
+    throw new BarsyError(`Barsy ${method} returned non-JSON: ${text.slice(0, 200)}`, res.status, text);
   }
-}
-
-/* ─── Response normalization ────────────────────────────────────────────
- * Barsy responses vary between a bare array, {data: [...]}, and
- * DataTables-style {aaData: [...]} envelopes. Field names also vary per
- * install/version, so lookups go through candidate lists.
- */
-
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-type AnyObj = Record<string, any>;
-
-export function unwrapList(raw: unknown): AnyObj[] {
-  if (Array.isArray(raw)) return raw as AnyObj[];
-  if (raw && typeof raw === "object") {
-    const o = raw as AnyObj;
-    for (const key of ["data", "aaData", "rows", "list", "result", "storeloads", "suppliers"]) {
-      if (Array.isArray(o[key])) return o[key];
-    }
-    // Single-object result (e.g. STORELOADS_get) — caller handles it
-  }
-  return [];
-}
-
-export function pick(obj: AnyObj | null | undefined, candidates: string[]): unknown {
-  if (!obj) return undefined;
-  for (const key of candidates) {
-    if (obj[key] !== undefined && obj[key] !== null && obj[key] !== "") return obj[key];
-  }
-  return undefined;
-}
-
-export function num(v: unknown): number {
-  if (typeof v === "number") return v;
-  if (typeof v === "string") {
-    const n = parseFloat(v.replace(",", "."));
-    return Number.isFinite(n) ? n : 0;
-  }
-  return 0;
-}
-
-export function str(v: unknown): string {
-  return v === undefined || v === null ? "" : String(v);
 }
 
 /* ─── Domain types ───────────────────────────────────────────────────── */
 
-export interface LoadRow {
-  articleId: string;
-  articleName: string;
-  quantity: number;
-  unitPrice: number; // delivery price per unit
-  total: number;
-}
-
-export interface StoreLoad {
-  id: string;
-  date: string;
+/** One article row inside a зареждане (from Reports_storeloads_details). */
+export interface LoadDetailRow {
+  storeLoadId: number;
+  date: string; // entry datetime
+  docDate: string; // document date (what the period filter applies to)
+  docNum: string;
   supplierId: string;
   supplierName: string;
-  depotName: string;
-  documentNum: string;
-  total: number;
-  rows: LoadRow[];
+  articleId: string;
+  articleName: string;
+  unit: string; // мерна единица (бр, кг, л…)
+  quantity: number;
+  unitPrice: number; // per unit, EUR, without VAT
+  total: number; // row total, EUR, without VAT
+  unitPriceTax: number; // per unit, EUR, with VAT
+  totalTax: number; // row total, EUR, with VAT
 }
 
 export interface Supplier {
@@ -125,125 +81,86 @@ export interface Supplier {
   name: string;
 }
 
-/* ─── Normalizers ────────────────────────────────────────────────────── */
+/* ─── Fetchers ───────────────────────────────────────────────────────── */
 
-const F = {
-  loadId: ["storeload_id", "store_load_id", "load_id", "id", "doc_id"],
-  loadDate: ["load_date", "date", "doc_date", "document_date", "created", "date_created", "load_time"],
-  supplierId: ["supplier_id", "supplierid"],
-  supplierName: ["supplier_name", "supplier", "suppliername"],
-  depotName: ["depot_name", "depot", "warehouse_name"],
-  documentNum: ["doc_num", "document_num", "invoice_num", "num", "doc_number"],
-  loadTotal: ["total", "total_sum", "sum", "total_price", "load_sum", "amount_total", "total_delivery_price"],
-  rowsKey: ["rows", "details", "articles", "items", "storeload_rows", "load_rows"],
-  articleId: ["article_id", "articleid"],
-  articleName: ["article_name", "name", "articlename"],
-  qty: ["amount", "quantity", "qty", "load_amount"],
-  unitPrice: ["delivery_price", "single_price", "price", "unit_price", "single_delivery_price"],
-  rowTotal: ["total", "total_price", "sum", "row_total", "total_delivery_price"],
-};
-
-export function normalizeLoad(o: AnyObj): StoreLoad {
-  const rawRows = (pick(o, F.rowsKey) as AnyObj[] | undefined) ?? [];
-  const rows: LoadRow[] = (Array.isArray(rawRows) ? rawRows : []).map((r) => {
-    const quantity = num(pick(r, F.qty));
-    const unitPrice = num(pick(r, F.unitPrice));
-    const explicitTotal = num(pick(r, F.rowTotal));
-    return {
-      articleId: str(pick(r, F.articleId)),
-      articleName: str(pick(r, F.articleName)),
-      quantity,
-      unitPrice,
-      total: explicitTotal || quantity * unitPrice,
-    };
-  });
-  const explicitTotal = num(pick(o, F.loadTotal));
-  return {
-    id: str(pick(o, F.loadId)),
-    date: str(pick(o, F.loadDate)),
-    supplierId: str(pick(o, F.supplierId)),
-    supplierName: str(pick(o, F.supplierName)),
-    depotName: str(pick(o, F.depotName)),
-    documentNum: str(pick(o, F.documentNum)),
-    total: explicitTotal || rows.reduce((s, r) => s + r.total, 0),
-    rows,
-  };
-}
-
-export function normalizeSupplier(o: AnyObj): Supplier {
-  return {
-    id: str(pick(o, ["supplier_id", "id"])),
-    name: str(pick(o, ["supplier_name", "name"])),
-  };
-}
-
-/* ─── High-level fetchers ────────────────────────────────────────────── */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type AnyObj = Record<string, any>;
 
 export async function getSuppliers(): Promise<Supplier[]> {
   const raw = await barsyCall("Suppliers_getlist", { filters: {}, start: 0, length: 1000 });
-  return unwrapList(raw).map(normalizeSupplier).filter((s) => s.id || s.name);
+  const list: AnyObj[] = Array.isArray(raw) ? raw : (raw as AnyObj)?.data ?? [];
+  return list
+    .map((o) => ({ id: String(o.supplier_id ?? o.id ?? ""), name: String(o.supplier_name ?? o.name ?? "") }))
+    .filter((s) => s.id && s.name);
 }
 
-export interface LoadListFilters {
-  from?: string; // YYYY-MM-DD
-  to?: string; // YYYY-MM-DD
-  supplierId?: string;
+const REPORT_COLUMNS = [
+  "store_load_id",
+  "date",
+  "doc_date",
+  "doc_num",
+  "supplier_id",
+  "supplier_name",
+  "article_id",
+  "article_name",
+  "amount",
+  "amount_type_name_short",
+  "current_price",
+  "current_price_total",
+  "current_price_tax",
+  "current_price_tax_total",
+];
+
+const PAGE_ROWS = 500;
+const MAX_PAGES = 40; // 20k article rows per query — far above normal volume
+
+export interface DetailFilters {
+  from: string; // YYYY-MM-DD (doc_date)
+  to: string; // YYYY-MM-DD (doc_date)
 }
 
-export async function getStoreLoads(f: LoadListFilters): Promise<StoreLoad[]> {
-  const filters: AnyObj = {};
-  if (f.from) filters.date_from = `${f.from} 00:00:00`;
-  if (f.to) filters.date_to = `${f.to} 23:59:59`;
-  if (f.supplierId) filters.supplier_id = f.supplierId;
-
-  const all: AnyObj[] = [];
-  const PAGE = 500;
-  for (let start = 0; start < 10000; start += PAGE) {
-    const raw = await barsyCall("Storeloads_getlist", { filters, start, length: PAGE });
-    const page = unwrapList(raw);
-    all.push(...page);
-    if (page.length < PAGE) break;
-  }
-  return all.map(normalizeLoad);
-}
-
-export async function getStoreLoad(id: string): Promise<StoreLoad> {
-  const raw = await barsyCall("Storeloads_get", { storeload_id: id, id });
-  const obj = Array.isArray(raw) ? (raw[0] as AnyObj) : (raw as AnyObj);
-  // Some installs wrap the object in {data: {...}}
-  const inner = obj && typeof obj === "object" && !Array.isArray(obj) && obj.data && typeof obj.data === "object" && !Array.isArray(obj.data)
-    ? (obj.data as AnyObj)
-    : obj;
-  return normalizeLoad(inner ?? {});
-}
-
-/** Fetch details for many loads with bounded concurrency. */
-export async function getLoadsWithRows(loads: StoreLoad[], concurrency = 5): Promise<StoreLoad[]> {
-  const out: StoreLoad[] = new Array(loads.length);
-  let idx = 0;
-  async function worker() {
-    while (idx < loads.length) {
-      const i = idx++;
-      const l = loads[i];
-      if (l.rows.length > 0 || !l.id) {
-        out[i] = l;
-        continue;
-      }
-      try {
-        const detail = await getStoreLoad(l.id);
-        // Keep header fields from the list when the detail lacks them
-        out[i] = {
-          ...l,
-          rows: detail.rows,
-          total: detail.total || l.total,
-          supplierName: l.supplierName || detail.supplierName,
-          supplierId: l.supplierId || detail.supplierId,
-        };
-      } catch {
-        out[i] = l; // keep header-only on failure
-      }
+/** All article rows of all зареждания in the period (one row = article × load). */
+export async function getLoadDetailRows(f: DetailFilters): Promise<LoadDetailRow[]> {
+  const rows: LoadDetailRow[] = [];
+  for (let page = 1; page <= MAX_PAGES; page++) {
+    const raw = (await barsyCall("Reports_storeloads_details", {
+      action_type: "values",
+      active_struct_id: "eStructList_1",
+      filters: { ref_date: [f.from, f.to] },
+      page_num: page,
+      rows: PAGE_ROWS,
+      columns: REPORT_COLUMNS,
+    })) as AnyObj;
+    const pageRows: AnyObj[] = Array.isArray(raw?.rows) ? raw.rows : [];
+    for (const r of pageRows) {
+      rows.push({
+        storeLoadId: Number(r.store_load_id) || 0,
+        date: String(r.date ?? ""),
+        docDate: String(r.doc_date ?? "").slice(0, 10),
+        docNum: String(r.doc_num ?? ""),
+        supplierId: r.supplier_id != null ? String(r.supplier_id) : "",
+        supplierName: String(r.supplier_name ?? ""),
+        articleId: r.article_id != null ? String(r.article_id) : "",
+        articleName: String(r.article_name ?? ""),
+        unit: String(r.amount_type_name_short ?? ""),
+        quantity: num(r.amount),
+        unitPrice: num(r.current_price),
+        total: num(r.current_price_total) || num(r.amount) * num(r.current_price),
+        unitPriceTax: num(r.current_price_tax),
+        totalTax: num(r.current_price_tax_total) || num(r.amount) * num(r.current_price_tax),
+      });
     }
+    const totalPages = Number(raw?.total) || 1;
+    if (page >= totalPages || pageRows.length === 0) break;
   }
-  await Promise.all(Array.from({ length: Math.min(concurrency, loads.length) }, worker));
-  return out;
+  return rows;
+}
+
+function num(v: unknown): number {
+  if (typeof v === "number") return Number.isFinite(v) ? v : 0;
+  if (typeof v === "string") {
+    const n = parseFloat(v.replace(",", "."));
+    return Number.isFinite(n) ? n : 0;
+  }
+  return 0;
 }

@@ -44,10 +44,18 @@ npm run dev
 
 ## Barsy API methods used
 
-- `Storeloads_getlist` — list of loads for the period
-- `Storeloads_get` — item rows per load (fetched with bounded concurrency)
+- `Reports_storeloads_details` (action_type `values`) — the СКЛАД → ЗАРЕЖДАНИЯ →
+  ВСИЧКИ report: one row per article per load, incl. supplier, quantity, unit
+  and delivery prices with/without VAT. **The period filter (`ref_date`) applies
+  to the document date (`doc_date`), not the entry date** — same as the Barsy UI.
 - `Suppliers_getlist` — supplier dropdown
 
-Field names vary between Barsy installs, so responses are normalized through
-candidate-key lookups in [src/lib/barsy.ts](src/lib/barsy.ts). If a column shows
-empty, hit `/api/debug` to see the raw payload and extend the `F` field map.
+Verified against the live install (2026-07-02): primary currency is **EUR**
+(`*__sec_curr` columns are BGN at 1.95583). Pagination via `page_num`/`rows`
+(response `total` = page count). See [src/lib/barsy.ts](src/lib/barsy.ts).
+
+### Auth
+
+Clerk is used when `NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY` + `CLERK_SECRET_KEY` are
+set (unauthenticated visitors are redirected to the hosted sign-in). Without
+Clerk keys, it falls back to HTTP Basic Auth via `DASH_USER`/`DASH_PASS`.

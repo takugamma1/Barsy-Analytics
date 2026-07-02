@@ -5,28 +5,31 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 interface ArticleAgg {
   articleId: string;
   articleName: string;
+  unit: string;
   quantity: number;
   total: number;
+  totalTax: number;
   avgPrice: number;
   lastPrice: number;
 }
 
-interface LoadRow {
+interface DetailRow {
   articleId: string;
   articleName: string;
+  unit: string;
   quantity: number;
   unitPrice: number;
   total: number;
 }
 
-interface StoreLoad {
-  id: string;
+interface LoadAgg {
+  id: number;
   date: string;
-  supplierName: string;
-  documentNum: string;
-  depotName: string;
+  docDate: string;
+  docNum: string;
   total: number;
-  rows: LoadRow[];
+  totalTax: number;
+  rows: DetailRow[];
 }
 
 interface SupplierAgg {
@@ -34,14 +37,16 @@ interface SupplierAgg {
   supplierName: string;
   loadCount: number;
   total: number;
+  totalTax: number;
   articles: ArticleAgg[];
-  loads: StoreLoad[];
+  loads: LoadAgg[];
 }
 
 interface Analytics {
   from: string;
   to: string;
-  totals: { loadCount: number; supplierCount: number; total: number };
+  currency: string;
+  totals: { loadCount: number; supplierCount: number; articleRowCount: number; total: number; totalTax: number };
   suppliers: SupplierAgg[];
 }
 
@@ -51,7 +56,7 @@ interface Supplier {
 }
 
 function fmtMoney(n: number): string {
-  return n.toLocaleString("bg-BG", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  return n.toLocaleString("bg-BG", { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + " €";
 }
 
 function fmtQty(n: number): string {
@@ -113,7 +118,7 @@ export default function Dashboard() {
   return (
     <div className="container">
       <h1>Barsy Analytics — Зареждания</h1>
-      <p className="subtitle">СКЛАД → ЗАРЕЖДАНИЯ → ВСИЧКИ · по доставчик и артикул</p>
+      <p className="subtitle">СКЛАД → ЗАРЕЖДАНИЯ → ВСИЧКИ · по доставчик и артикул · период по документ дата</p>
 
       <div className="filters">
         <label>
@@ -145,7 +150,7 @@ export default function Dashboard() {
       {data && (
         <div className="kpis">
           <div className="kpi">
-            <div className="label">Общо зареждания</div>
+            <div className="label">Зареждания</div>
             <div className="value">{data.totals.loadCount}</div>
           </div>
           <div className="kpi">
@@ -153,8 +158,12 @@ export default function Dashboard() {
             <div className="value">{data.totals.supplierCount}</div>
           </div>
           <div className="kpi">
-            <div className="label">Обща стойност</div>
+            <div className="label">Стойност (без ДДС)</div>
             <div className="value">{fmtMoney(data.totals.total)}</div>
+          </div>
+          <div className="kpi">
+            <div className="label">Стойност (с ДДС)</div>
+            <div className="value">{fmtMoney(data.totals.totalTax)}</div>
           </div>
         </div>
       )}
@@ -207,18 +216,17 @@ function SupplierCard({ s, maxTotal }: { s: SupplierAgg; maxTotal: number }) {
 }
 
 function ArticlesTable({ articles }: { articles: ArticleAgg[] }) {
-  if (articles.length === 0) {
-    return <div className="empty">Няма редове с артикули (детайлите не бяха достъпни).</div>;
-  }
   return (
     <table>
       <thead>
         <tr>
           <th>Артикул</th>
           <th className="r">Количество</th>
+          <th>Мярка</th>
           <th className="r">Средна цена</th>
           <th className="r">Последна цена</th>
-          <th className="r">Обща стойност</th>
+          <th className="r">Стойност (без ДДС)</th>
+          <th className="r">С ДДС</th>
         </tr>
       </thead>
       <tbody>
@@ -226,9 +234,11 @@ function ArticlesTable({ articles }: { articles: ArticleAgg[] }) {
           <tr key={a.articleId || a.articleName}>
             <td>{a.articleName || a.articleId}</td>
             <td className="r">{fmtQty(a.quantity)}</td>
+            <td>{a.unit}</td>
             <td className="r">{fmtMoney(a.avgPrice)}</td>
             <td className="r">{fmtMoney(a.lastPrice)}</td>
             <td className="r">{fmtMoney(a.total)}</td>
+            <td className="r">{fmtMoney(a.totalTax)}</td>
           </tr>
         ))}
       </tbody>
@@ -236,68 +246,68 @@ function ArticlesTable({ articles }: { articles: ArticleAgg[] }) {
   );
 }
 
-function LoadsTable({ loads }: { loads: StoreLoad[] }) {
-  const [openId, setOpenId] = useState<string>("");
+function LoadsTable({ loads }: { loads: LoadAgg[] }) {
+  const [openId, setOpenId] = useState<number>(0);
   return (
     <table>
       <thead>
         <tr>
           <th>Дата</th>
-          <th>Документ</th>
-          <th>Склад</th>
+          <th>Док. дата</th>
+          <th>Док. №</th>
           <th className="r">Артикули</th>
-          <th className="r">Стойност</th>
+          <th className="r">Стойност (без ДДС)</th>
+          <th className="r">С ДДС</th>
         </tr>
       </thead>
       <tbody>
         {loads.map((l) => (
-          <LoadRows key={l.id} l={l} open={openId === l.id} toggle={() => setOpenId(openId === l.id ? "" : l.id)} />
+          <LoadRows key={l.id} l={l} open={openId === l.id} toggle={() => setOpenId(openId === l.id ? 0 : l.id)} />
         ))}
       </tbody>
     </table>
   );
 }
 
-function LoadRows({ l, open, toggle }: { l: StoreLoad; open: boolean; toggle: () => void }) {
+function LoadRows({ l, open, toggle }: { l: LoadAgg; open: boolean; toggle: () => void }) {
   return (
     <>
       <tr className="load-row" onClick={toggle}>
         <td>
           {open ? "▾ " : "▸ "}
-          {l.date}
+          {l.date.slice(0, 16)}
         </td>
-        <td>{l.documentNum || l.id}</td>
-        <td>{l.depotName || "—"}</td>
+        <td>{l.docDate}</td>
+        <td>{l.docNum || l.id}</td>
         <td className="r">{l.rows.length}</td>
         <td className="r">{fmtMoney(l.total)}</td>
+        <td className="r">{fmtMoney(l.totalTax)}</td>
       </tr>
       {open && (
         <tr className="load-items">
-          <td colSpan={5}>
-            {l.rows.length === 0 ? (
-              <span style={{ color: "var(--muted)" }}>Няма детайли за това зареждане.</span>
-            ) : (
-              <table>
-                <thead>
-                  <tr>
-                    <th>Артикул</th>
-                    <th className="r">Количество</th>
-                    <th className="r">Единична цена</th>
-                    <th className="r">Стойност</th>
+          <td colSpan={6}>
+            <table>
+              <thead>
+                <tr>
+                  <th>Артикул</th>
+                  <th className="r">Количество</th>
+                  <th>Мярка</th>
+                  <th className="r">Единична цена</th>
+                  <th className="r">Стойност (без ДДС)</th>
+                </tr>
+              </thead>
+              <tbody>
+                {l.rows.map((r, i) => (
+                  <tr key={`${r.articleId}-${i}`}>
+                    <td>{r.articleName || r.articleId}</td>
+                    <td className="r">{fmtQty(r.quantity)}</td>
+                    <td>{r.unit}</td>
+                    <td className="r">{fmtMoney(r.unitPrice)}</td>
+                    <td className="r">{fmtMoney(r.total)}</td>
                   </tr>
-                </thead>
-                <tbody>
-                  {l.rows.map((r, i) => (
-                    <tr key={`${r.articleId}-${i}`}>
-                      <td>{r.articleName || r.articleId}</td>
-                      <td className="r">{fmtQty(r.quantity)}</td>
-                      <td className="r">{fmtMoney(r.unitPrice)}</td>
-                      <td className="r">{fmtMoney(r.total)}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            )}
+                ))}
+              </tbody>
+            </table>
           </td>
         </tr>
       )}

@@ -11,8 +11,10 @@ export const dynamic = "force-dynamic";
 export async function GET(req: NextRequest) {
   const { searchParams } = new URL(req.url);
   const method = searchParams.get("method") || "Storeloads_getlist";
-  if (!/^[A-Za-z_]+_(getlist|get|getgrouplist)$/i.test(method)) {
-    return NextResponse.json({ error: "Only read methods (*_get, *_getlist) are allowed" }, { status: 400 });
+  const isGetMethod = /^[A-Za-z_]+_get[a-z_]*$/i.test(method);
+  const isReport = /^Reports_[a-z_]+$/i.test(method);
+  if (!isGetMethod && !isReport) {
+    return NextResponse.json({ error: "Only read methods (*_get*, Reports_*) are allowed" }, { status: 400 });
   }
   let params: Record<string, unknown> = { filters: {}, start: 0, length: 2 };
   const rawParams = searchParams.get("params");
@@ -22,6 +24,9 @@ export async function GET(req: NextRequest) {
     } catch {
       return NextResponse.json({ error: "params must be valid JSON" }, { status: 400 });
     }
+  }
+  if (isReport && !["content", "values"].includes(String(params.action_type ?? "content"))) {
+    return NextResponse.json({ error: "Reports_* allowed only with action_type content/values" }, { status: 400 });
   }
   try {
     const result = await barsyCall(method, params);
