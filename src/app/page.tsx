@@ -55,6 +55,56 @@ interface Supplier {
   name: string;
 }
 
+interface Purchase {
+  date: string;
+  docDate: string;
+  docNum: string;
+  storeLoadId: number;
+  supplierName: string;
+  quantity: number;
+  unitPrice: number;
+  unitPriceTax: number;
+  total: number;
+  totalTax: number;
+}
+
+interface PeriodAgg {
+  period: string;
+  purchases: number;
+  quantity: number;
+  total: number;
+  totalTax: number;
+  avgPrice: number;
+  minPrice: number;
+  maxPrice: number;
+}
+
+interface ArticleHistory {
+  article: { id: string; name: string; unit: string };
+  from: string;
+  to: string;
+  summary: {
+    purchases: number;
+    quantity: number;
+    total: number;
+    totalTax: number;
+    avgPrice: number;
+    minPrice: number;
+    maxPrice: number;
+    lastPrice: number;
+    lastDate: string;
+  };
+  purchases: Purchase[];
+  byMonth: PeriodAgg[];
+  byYear: PeriodAgg[];
+}
+
+interface ArticleRef {
+  id: string;
+  name: string;
+  unit: string;
+}
+
 function fmtMoney(n: number): string {
   return n.toLocaleString("bg-BG", { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + " €";
 }
@@ -66,6 +116,20 @@ function fmtMoneyShort(n: number): string {
 
 function fmtQty(n: number): string {
   return n.toLocaleString("bg-BG", { maximumFractionDigits: 3 });
+}
+
+function fmtPrice(n: number): string {
+  return n.toLocaleString("bg-BG", { minimumFractionDigits: 2, maximumFractionDigits: 4 }) + " €";
+}
+
+const MONTH_NAMES = ["яну", "фев", "мар", "апр", "май", "юни", "юли", "авг", "сеп", "окт", "ное", "дек"];
+
+function fmtPeriod(p: string): string {
+  if (p.length === 7) {
+    const [y, m] = p.split("-");
+    return `${MONTH_NAMES[parseInt(m, 10) - 1]} ${y}`;
+  }
+  return p;
 }
 
 function iso(d: Date): string {
@@ -120,6 +184,7 @@ export default function Dashboard() {
   const [data, setData] = useState<Analytics | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+  const [articleModal, setArticleModal] = useState<ArticleRef | null>(null);
 
   useEffect(() => {
     fetch("/api/suppliers")
@@ -304,13 +369,27 @@ export default function Dashboard() {
       {visibleSuppliers.map((s) => {
         const key = s.supplierId || s.supplierName;
         const solo = viewSupplier === key || !!supplierId || visibleSuppliers.length === 1;
-        return <SupplierCard key={`${key}-${solo}`} s={s} maxTotal={maxTotal} defaultOpen={solo} />;
+        return (
+          <SupplierCard key={`${key}-${solo}`} s={s} maxTotal={maxTotal} defaultOpen={solo} onArticle={setArticleModal} />
+        );
       })}
+
+      {articleModal && <ArticleModal article={articleModal} onClose={() => setArticleModal(null)} />}
     </div>
   );
 }
 
-function SupplierCard({ s, maxTotal, defaultOpen }: { s: SupplierAgg; maxTotal: number; defaultOpen: boolean }) {
+function SupplierCard({
+  s,
+  maxTotal,
+  defaultOpen,
+  onArticle,
+}: {
+  s: SupplierAgg;
+  maxTotal: number;
+  defaultOpen: boolean;
+  onArticle: (a: ArticleRef) => void;
+}) {
   const [open, setOpen] = useState(defaultOpen);
   const [tab, setTab] = useState<"articles" | "loads">("articles");
 
@@ -337,14 +416,18 @@ function SupplierCard({ s, maxTotal, defaultOpen }: { s: SupplierAgg; maxTotal: 
               Зареждания ({s.loads.length})
             </button>
           </div>
-          {tab === "articles" ? <ArticlesTable articles={s.articles} /> : <LoadsTable loads={s.loads} />}
+          {tab === "articles" ? (
+            <ArticlesTable articles={s.articles} onArticle={onArticle} />
+          ) : (
+            <LoadsTable loads={s.loads} onArticle={onArticle} />
+          )}
         </div>
       )}
     </div>
   );
 }
 
-function ArticlesTable({ articles }: { articles: ArticleAgg[] }) {
+function ArticlesTable({ articles, onArticle }: { articles: ArticleAgg[]; onArticle: (a: ArticleRef) => void }) {
   return (
     <div className="table-wrap">
       <table>
@@ -361,8 +444,12 @@ function ArticlesTable({ articles }: { articles: ArticleAgg[] }) {
         </thead>
         <tbody>
           {articles.map((a) => (
-            <tr key={a.articleId || a.articleName}>
-              <td>{a.articleName || a.articleId}</td>
+            <tr
+              key={a.articleId || a.articleName}
+              className={a.articleId ? "article-row" : ""}
+              onClick={() => a.articleId && onArticle({ id: a.articleId, name: a.articleName, unit: a.unit })}
+            >
+              <td className={a.articleId ? "article-link" : ""}>{a.articleName || a.articleId}</td>
               <td className="r">{fmtQty(a.quantity)}</td>
               <td>{a.unit}</td>
               <td className="r">{fmtMoney(a.avgPrice)}</td>
@@ -377,7 +464,7 @@ function ArticlesTable({ articles }: { articles: ArticleAgg[] }) {
   );
 }
 
-function LoadsTable({ loads }: { loads: LoadAgg[] }) {
+function LoadsTable({ loads, onArticle }: { loads: LoadAgg[]; onArticle: (a: ArticleRef) => void }) {
   const [openId, setOpenId] = useState<number>(0);
   return (
     <div className="table-wrap">
@@ -394,7 +481,13 @@ function LoadsTable({ loads }: { loads: LoadAgg[] }) {
         </thead>
         <tbody>
           {loads.map((l) => (
-            <LoadRows key={l.id} l={l} open={openId === l.id} toggle={() => setOpenId(openId === l.id ? 0 : l.id)} />
+            <LoadRows
+              key={l.id}
+              l={l}
+              open={openId === l.id}
+              toggle={() => setOpenId(openId === l.id ? 0 : l.id)}
+              onArticle={onArticle}
+            />
           ))}
         </tbody>
       </table>
@@ -402,7 +495,263 @@ function LoadsTable({ loads }: { loads: LoadAgg[] }) {
   );
 }
 
-function LoadRows({ l, open, toggle }: { l: LoadAgg; open: boolean; toggle: () => void }) {
+const HISTORY_RANGES = [
+  { key: "6m", label: "6 мес", months: 6 },
+  { key: "12m", label: "12 мес", months: 12 },
+  { key: "24m", label: "24 мес", months: 24 },
+  { key: "all", label: "Всичко", months: 0 },
+];
+
+function ArticleModal({ article, onClose }: { article: ArticleRef; onClose: () => void }) {
+  const [range, setRange] = useState("12m");
+  const [tab, setTab] = useState<"months" | "years" | "purchases">("months");
+  const [hist, setHist] = useState<ArticleHistory | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    const r = HISTORY_RANGES.find((x) => x.key === range)!;
+    const from = r.months
+      ? (() => {
+          const d = new Date();
+          d.setMonth(d.getMonth() - r.months);
+          return iso(d);
+        })()
+      : "2024-01-01";
+    setLoading(true);
+    setError("");
+    fetch(`/api/article?id=${article.id}&from=${from}`)
+      .then(async (res) => {
+        const d = await res.json();
+        if (!res.ok) throw new Error(d.error || `HTTP ${res.status}`);
+        setHist(d);
+      })
+      .catch((e) => {
+        setError(e instanceof Error ? e.message : "Грешка");
+        setHist(null);
+      })
+      .finally(() => setLoading(false));
+  }, [article.id, range]);
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => e.key === "Escape" && onClose();
+    document.addEventListener("keydown", onKey);
+    document.body.style.overflow = "hidden";
+    return () => {
+      document.removeEventListener("keydown", onKey);
+      document.body.style.overflow = "";
+    };
+  }, [onClose]);
+
+  const s = hist?.summary;
+
+  return (
+    <div className="modal-overlay" onClick={onClose}>
+      <div className="modal" onClick={(e) => e.stopPropagation()}>
+        <div className="modal-head">
+          <div>
+            <div className="modal-title">{article.name}</div>
+            <div className="modal-sub">Цена на доставка за 1 {article.unit || "бр"} · без ДДС</div>
+          </div>
+          <button className="modal-close" onClick={onClose} aria-label="Затвори">
+            ✕
+          </button>
+        </div>
+
+        <div className="presets" style={{ padding: "0 16px" }}>
+          {HISTORY_RANGES.map((r) => (
+            <button key={r.key} className={`preset ${range === r.key ? "active" : ""}`} onClick={() => setRange(r.key)}>
+              {r.label}
+            </button>
+          ))}
+        </div>
+
+        <div className="modal-body">
+          {loading && <div className="loading">Зареждане…</div>}
+          {error && <div className="error">{error}</div>}
+
+          {!loading && hist && s && s.purchases === 0 && (
+            <div className="empty">Няма зареждания на този артикул за периода.</div>
+          )}
+
+          {!loading && hist && s && s.purchases > 0 && (
+            <>
+              <div className="kpis kpis-modal">
+                <div className="kpi">
+                  <div className="label">Последна цена</div>
+                  <div className="value">{fmtPrice(s.lastPrice)}</div>
+                </div>
+                <div className="kpi">
+                  <div className="label">Средна цена</div>
+                  <div className="value">{fmtPrice(s.avgPrice)}</div>
+                </div>
+                <div className="kpi">
+                  <div className="label">Мин / Макс</div>
+                  <div className="value small">
+                    {fmtPrice(s.minPrice)} / {fmtPrice(s.maxPrice)}
+                  </div>
+                </div>
+                <div className="kpi">
+                  <div className="label">Общо {fmtQty(s.quantity)} {article.unit}</div>
+                  <div className="value small">{fmtMoney(s.total)}</div>
+                </div>
+              </div>
+
+              <PriceChart purchases={hist.purchases} />
+
+              <div className="tabs">
+                <button className={tab === "months" ? "active" : ""} onClick={() => setTab("months")}>
+                  По месеци ({hist.byMonth.length})
+                </button>
+                <button className={tab === "years" ? "active" : ""} onClick={() => setTab("years")}>
+                  По години ({hist.byYear.length})
+                </button>
+                <button className={tab === "purchases" ? "active" : ""} onClick={() => setTab("purchases")}>
+                  Покупки ({hist.purchases.length})
+                </button>
+              </div>
+
+              {tab !== "purchases" ? (
+                <PeriodTable periods={tab === "months" ? hist.byMonth : hist.byYear} unit={article.unit} />
+              ) : (
+                <PurchasesTable purchases={hist.purchases} />
+              )}
+            </>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function PriceChart({ purchases }: { purchases: Purchase[] }) {
+  const pts = purchases.filter((p) => p.unitPrice > 0);
+  if (pts.length < 2) return null;
+
+  const W = 640;
+  const H = 180;
+  const PAD_L = 8;
+  const PAD_R = 8;
+  const PAD_T = 14;
+  const PAD_B = 22;
+
+  const times = pts.map((p) => new Date(p.date.replace(" ", "T")).getTime());
+  const prices = pts.map((p) => p.unitPrice);
+  const tMin = Math.min(...times);
+  const tMax = Math.max(...times);
+  const pMin = Math.min(...prices);
+  const pMax = Math.max(...prices);
+  const pPad = (pMax - pMin) * 0.15 || pMax * 0.1 || 1;
+  const yLo = Math.max(0, pMin - pPad);
+  const yHi = pMax + pPad;
+
+  const x = (t: number) => PAD_L + ((t - tMin) / Math.max(1, tMax - tMin)) * (W - PAD_L - PAD_R);
+  const y = (p: number) => PAD_T + (1 - (p - yLo) / (yHi - yLo)) * (H - PAD_T - PAD_B);
+
+  const path = pts.map((p, i) => `${i === 0 ? "M" : "L"}${x(times[i]).toFixed(1)},${y(p.unitPrice).toFixed(1)}`).join(" ");
+
+  const first = pts[0];
+  const last = pts[pts.length - 1];
+  const fmtD = (d: string) => `${d.slice(8, 10)}.${d.slice(5, 7)}.${d.slice(2, 4)}`;
+
+  return (
+    <div className="chart-wrap">
+      <svg viewBox={`0 0 ${W} ${H}`} className="price-chart" preserveAspectRatio="none" role="img" aria-label="Цена по време">
+        {[0.25, 0.5, 0.75].map((f) => (
+          <line key={f} x1={PAD_L} x2={W - PAD_R} y1={PAD_T + f * (H - PAD_T - PAD_B)} y2={PAD_T + f * (H - PAD_T - PAD_B)} className="grid" />
+        ))}
+        <path d={path} className="line" />
+        {pts.map((p, i) => (
+          <circle key={i} cx={x(times[i])} cy={y(p.unitPrice)} r={pts.length > 40 ? 2 : 3.5} className="dot">
+            <title>{`${fmtD(p.date)} · ${p.unitPrice.toFixed(4)} € · ${p.quantity} × · ${p.supplierName}`}</title>
+          </circle>
+        ))}
+        <circle cx={x(times[times.length - 1])} cy={y(last.unitPrice)} r={5} className="dot-last" />
+        <text x={PAD_L} y={y(pMax) - 4} className="lbl">{`макс ${fmtPrice(pMax)}`}</text>
+        <text x={PAD_L} y={y(pMin) + 12} className="lbl">{`мин ${fmtPrice(pMin)}`}</text>
+        <text x={PAD_L} y={H - 6} className="lbl dim">{fmtD(first.date)}</text>
+        <text x={W - PAD_R} y={H - 6} className="lbl dim" textAnchor="end">{fmtD(last.date)}</text>
+      </svg>
+    </div>
+  );
+}
+
+function PeriodTable({ periods, unit }: { periods: PeriodAgg[]; unit: string }) {
+  return (
+    <div className="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Период</th>
+            <th className="r">Покупки</th>
+            <th className="r">Количество ({unit || "бр"})</th>
+            <th className="r">Ср. цена</th>
+            <th className="r">Мин</th>
+            <th className="r">Макс</th>
+            <th className="r">Стойност (без ДДС)</th>
+          </tr>
+        </thead>
+        <tbody>
+          {periods.map((p) => (
+            <tr key={p.period}>
+              <td>{fmtPeriod(p.period)}</td>
+              <td className="r">{p.purchases}</td>
+              <td className="r">{fmtQty(p.quantity)}</td>
+              <td className="r">{fmtPrice(p.avgPrice)}</td>
+              <td className="r">{fmtPrice(p.minPrice)}</td>
+              <td className="r">{fmtPrice(p.maxPrice)}</td>
+              <td className="r">{fmtMoney(p.total)}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function PurchasesTable({ purchases }: { purchases: Purchase[] }) {
+  const rows = [...purchases].reverse();
+  return (
+    <div className="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Дата</th>
+            <th>Доставчик</th>
+            <th>Док. №</th>
+            <th className="r">Количество</th>
+            <th className="r">Ед. цена</th>
+            <th className="r">Стойност (без ДДС)</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((p, i) => (
+            <tr key={`${p.storeLoadId}-${i}`}>
+              <td>{p.date.slice(0, 10)}</td>
+              <td>{p.supplierName}</td>
+              <td>{p.docNum || p.storeLoadId}</td>
+              <td className="r">{fmtQty(p.quantity)}</td>
+              <td className="r">{fmtPrice(p.unitPrice)}</td>
+              <td className="r">{fmtMoney(p.total)}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function LoadRows({
+  l,
+  open,
+  toggle,
+  onArticle,
+}: {
+  l: LoadAgg;
+  open: boolean;
+  toggle: () => void;
+  onArticle: (a: ArticleRef) => void;
+}) {
   return (
     <>
       <tr className="load-row" onClick={toggle}>
@@ -431,8 +780,15 @@ function LoadRows({ l, open, toggle }: { l: LoadAgg; open: boolean; toggle: () =
               </thead>
               <tbody>
                 {l.rows.map((r, i) => (
-                  <tr key={`${r.articleId}-${i}`}>
-                    <td>{r.articleName || r.articleId}</td>
+                  <tr
+                    key={`${r.articleId}-${i}`}
+                    className={r.articleId ? "article-row" : ""}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      if (r.articleId) onArticle({ id: r.articleId, name: r.articleName, unit: r.unit });
+                    }}
+                  >
+                    <td className={r.articleId ? "article-link" : ""}>{r.articleName || r.articleId}</td>
                     <td className="r">{fmtQty(r.quantity)}</td>
                     <td>{r.unit}</td>
                     <td className="r">{fmtMoney(r.unitPrice)}</td>

@@ -117,16 +117,20 @@ const MAX_PAGES = 40; // 20k article rows per query — far above normal volume
 export interface DetailFilters {
   from: string; // YYYY-MM-DD (doc_date)
   to: string; // YYYY-MM-DD (doc_date)
+  /** Barsy article_id — the report's article filter takes the ID as a number */
+  articleId?: string;
 }
 
 /** All article rows of all зареждания in the period (one row = article × load). */
 export async function getLoadDetailRows(f: DetailFilters): Promise<LoadDetailRow[]> {
+  const filters: AnyObj = { ref_date: [f.from, f.to] };
+  if (f.articleId) filters.article_name = Number(f.articleId);
   const rows: LoadDetailRow[] = [];
   for (let page = 1; page <= MAX_PAGES; page++) {
     const raw = (await barsyCall("Reports_storeloads_details", {
       action_type: "values",
       active_struct_id: "eStructList_1",
-      filters: { ref_date: [f.from, f.to] },
+      filters,
       page_num: page,
       rows: PAGE_ROWS,
       columns: REPORT_COLUMNS,
