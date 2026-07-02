@@ -59,20 +59,63 @@ function fmtMoney(n: number): string {
   return n.toLocaleString("bg-BG", { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + " €";
 }
 
+function fmtMoneyShort(n: number): string {
+  if (n >= 1000) return (n / 1000).toLocaleString("bg-BG", { maximumFractionDigits: 1 }) + "k €";
+  return n.toLocaleString("bg-BG", { maximumFractionDigits: 0 }) + " €";
+}
+
 function fmtQty(n: number): string {
   return n.toLocaleString("bg-BG", { maximumFractionDigits: 3 });
+}
+
+function iso(d: Date): string {
+  return d.toISOString().slice(0, 10);
 }
 
 function daysAgo(n: number): string {
   const d = new Date();
   d.setDate(d.getDate() - n);
-  return d.toISOString().slice(0, 10);
+  return iso(d);
 }
+
+interface Preset {
+  key: string;
+  label: string;
+  range: () => { from: string; to: string };
+}
+
+const PRESETS: Preset[] = [
+  { key: "today", label: "Днес", range: () => ({ from: daysAgo(0), to: daysAgo(0) }) },
+  { key: "yesterday", label: "Вчера", range: () => ({ from: daysAgo(1), to: daysAgo(1) }) },
+  { key: "7d", label: "7 дни", range: () => ({ from: daysAgo(7), to: daysAgo(0) }) },
+  { key: "30d", label: "30 дни", range: () => ({ from: daysAgo(30), to: daysAgo(0) }) },
+  {
+    key: "thisMonth",
+    label: "Този месец",
+    range: () => {
+      const now = new Date();
+      return { from: iso(new Date(Date.UTC(now.getFullYear(), now.getMonth(), 1))), to: daysAgo(0) };
+    },
+  },
+  {
+    key: "lastMonth",
+    label: "Минал месец",
+    range: () => {
+      const now = new Date();
+      return {
+        from: iso(new Date(Date.UTC(now.getFullYear(), now.getMonth() - 1, 1))),
+        to: iso(new Date(Date.UTC(now.getFullYear(), now.getMonth(), 0))),
+      };
+    },
+  },
+];
 
 export default function Dashboard() {
   const [from, setFrom] = useState(daysAgo(30));
   const [to, setTo] = useState(daysAgo(0));
   const [supplierId, setSupplierId] = useState("");
+  const [preset, setPreset] = useState("30d");
+  const [viewSupplier, setViewSupplier] = useState(""); // instant client-side chip filter
   const [suppliers, setSuppliers] = useState<Supplier[]>([]);
   const [data, setData] = useState<Analytics | null>(null);
   const [loading, setLoading] = useState(false);
@@ -88,6 +131,7 @@ export default function Dashboard() {
   const load = useCallback(async (f: string, t: string, sup: string) => {
     setLoading(true);
     setError("");
+    setViewSupplier("");
     try {
       const params = new URLSearchParams({ from: f, to: t });
       if (sup) params.set("supplier", sup);
@@ -110,28 +154,91 @@ export default function Dashboard() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  const applyPreset = (p: Preset) => {
+    const r = p.range();
+    setFrom(r.from);
+    setTo(r.to);
+    setPreset(p.key);
+    load(r.from, r.to, supplierId);
+  };
+
   const maxTotal = useMemo(
     () => Math.max(1, ...(data?.suppliers.map((s) => s.total) || [])),
     [data]
   );
+
+  const chipSuppliers = useMemo(() => (data?.suppliers || []).slice(0, 10), [data]);
+
+  const visibleSuppliers = useMemo(() => {
+    if (!data) return [];
+    if (!viewSupplier) return data.suppliers;
+    return data.suppliers.filter((s) => (s.supplierId || s.supplierName) === viewSupplier);
+  }, [data, viewSupplier]);
+
+  const shownTotals = useMemo(() => {
+    if (!data) return null;
+    if (!viewSupplier) return data.totals;
+    const t = { loadCount: 0, supplierCount: visibleSuppliers.length, articleRowCount: 0, total: 0, totalTax: 0 };
+    for (const s of visibleSuppliers) {
+      t.loadCount += s.loadCount;
+      t.total += s.total;
+      t.totalTax += s.totalTax;
+    }
+    t.total = Math.round(t.total * 100) / 100;
+    t.totalTax = Math.round(t.totalTax * 100) / 100;
+    return t;
+  }, [data, viewSupplier, visibleSuppliers]);
 
   return (
     <div className="container">
       <h1>Barsy Analytics — Зареждания</h1>
       <p className="subtitle">СКЛАД → ЗАРЕЖДАНИЯ → ВСИЧКИ · по доставчик и артикул · период по документ дата</p>
 
+      <div className="presets" role="group" aria-label="Бърз период">
+        {PRESETS.map((p) => (
+          <button
+            key={p.key}
+            className={`preset ${preset === p.key ? "active" : ""}`}
+            onClick={() => applyPreset(p)}
+            disabled={loading}
+          >
+            {p.label}
+          </button>
+        ))}
+      </div>
+
       <div className="filters">
         <label>
           От дата
-          <input type="date" value={from} onChange={(e) => setFrom(e.target.value)} />
+          <input
+            type="date"
+            value={from}
+            onChange={(e) => {
+              setFrom(e.target.value);
+              setPreset("");
+            }}
+          />
         </label>
         <label>
           До дата
-          <input type="date" value={to} onChange={(e) => setTo(e.target.value)} />
+          <input
+            type="date"
+            value={to}
+            onChange={(e) => {
+              setTo(e.target.value);
+              setPreset("");
+            }}
+          />
         </label>
         <label>
           Доставчик
-          <select value={supplierId} onChange={(e) => setSupplierId(e.target.value)}>
+          <select
+            value={supplierId}
+            onChange={(e) => {
+              setSupplierId(e.target.value);
+              load(from, to, e.target.value);
+            }}
+          >
             <option value="">Всички доставчици</option>
             {suppliers.map((s) => (
               <option key={s.id} value={s.id}>
@@ -140,49 +247,71 @@ export default function Dashboard() {
             ))}
           </select>
         </label>
-        <button onClick={() => load(from, to, supplierId)} disabled={loading}>
+        <button className="go" onClick={() => load(from, to, supplierId)} disabled={loading}>
           {loading ? "Зареждане…" : "Покажи"}
         </button>
       </div>
 
       {error && <div className="error">{error}</div>}
 
-      {data && (
+      {data && !supplierId && chipSuppliers.length > 1 && (
+        <div className="chips" aria-label="Бърз филтър по доставчик">
+          <button className={`chip ${viewSupplier === "" ? "active" : ""}`} onClick={() => setViewSupplier("")}>
+            Всички
+          </button>
+          {chipSuppliers.map((s) => {
+            const key = s.supplierId || s.supplierName;
+            return (
+              <button
+                key={key}
+                className={`chip ${viewSupplier === key ? "active" : ""}`}
+                onClick={() => setViewSupplier(viewSupplier === key ? "" : key)}
+              >
+                {s.supplierName} <span className="chip-sum">{fmtMoneyShort(s.total)}</span>
+              </button>
+            );
+          })}
+        </div>
+      )}
+
+      {shownTotals && (
         <div className="kpis">
           <div className="kpi">
             <div className="label">Зареждания</div>
-            <div className="value">{data.totals.loadCount}</div>
+            <div className="value">{shownTotals.loadCount}</div>
           </div>
           <div className="kpi">
             <div className="label">Доставчици</div>
-            <div className="value">{data.totals.supplierCount}</div>
+            <div className="value">{shownTotals.supplierCount}</div>
           </div>
           <div className="kpi">
             <div className="label">Стойност (без ДДС)</div>
-            <div className="value">{fmtMoney(data.totals.total)}</div>
+            <div className="value">{fmtMoney(shownTotals.total)}</div>
           </div>
           <div className="kpi">
             <div className="label">Стойност (с ДДС)</div>
-            <div className="value">{fmtMoney(data.totals.totalTax)}</div>
+            <div className="value">{fmtMoney(shownTotals.totalTax)}</div>
           </div>
         </div>
       )}
 
       {loading && !data && <div className="loading">Зареждане на данни от Barsy…</div>}
 
-      {data && data.suppliers.length === 0 && (
+      {data && visibleSuppliers.length === 0 && (
         <div className="empty">Няма зареждания за избрания период.</div>
       )}
 
-      {data?.suppliers.map((s) => (
-        <SupplierCard key={s.supplierId || s.supplierName} s={s} maxTotal={maxTotal} />
-      ))}
+      {visibleSuppliers.map((s) => {
+        const key = s.supplierId || s.supplierName;
+        const solo = viewSupplier === key || !!supplierId || visibleSuppliers.length === 1;
+        return <SupplierCard key={`${key}-${solo}`} s={s} maxTotal={maxTotal} defaultOpen={solo} />;
+      })}
     </div>
   );
 }
 
-function SupplierCard({ s, maxTotal }: { s: SupplierAgg; maxTotal: number }) {
-  const [open, setOpen] = useState(false);
+function SupplierCard({ s, maxTotal, defaultOpen }: { s: SupplierAgg; maxTotal: number; defaultOpen: boolean }) {
+  const [open, setOpen] = useState(defaultOpen);
   const [tab, setTab] = useState<"articles" | "loads">("articles");
 
   return (
@@ -217,55 +346,59 @@ function SupplierCard({ s, maxTotal }: { s: SupplierAgg; maxTotal: number }) {
 
 function ArticlesTable({ articles }: { articles: ArticleAgg[] }) {
   return (
-    <table>
-      <thead>
-        <tr>
-          <th>Артикул</th>
-          <th className="r">Количество</th>
-          <th>Мярка</th>
-          <th className="r">Средна цена</th>
-          <th className="r">Последна цена</th>
-          <th className="r">Стойност (без ДДС)</th>
-          <th className="r">С ДДС</th>
-        </tr>
-      </thead>
-      <tbody>
-        {articles.map((a) => (
-          <tr key={a.articleId || a.articleName}>
-            <td>{a.articleName || a.articleId}</td>
-            <td className="r">{fmtQty(a.quantity)}</td>
-            <td>{a.unit}</td>
-            <td className="r">{fmtMoney(a.avgPrice)}</td>
-            <td className="r">{fmtMoney(a.lastPrice)}</td>
-            <td className="r">{fmtMoney(a.total)}</td>
-            <td className="r">{fmtMoney(a.totalTax)}</td>
+    <div className="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Артикул</th>
+            <th className="r">Количество</th>
+            <th>Мярка</th>
+            <th className="r">Средна цена</th>
+            <th className="r">Последна цена</th>
+            <th className="r">Стойност (без ДДС)</th>
+            <th className="r">С ДДС</th>
           </tr>
-        ))}
-      </tbody>
-    </table>
+        </thead>
+        <tbody>
+          {articles.map((a) => (
+            <tr key={a.articleId || a.articleName}>
+              <td>{a.articleName || a.articleId}</td>
+              <td className="r">{fmtQty(a.quantity)}</td>
+              <td>{a.unit}</td>
+              <td className="r">{fmtMoney(a.avgPrice)}</td>
+              <td className="r">{fmtMoney(a.lastPrice)}</td>
+              <td className="r">{fmtMoney(a.total)}</td>
+              <td className="r">{fmtMoney(a.totalTax)}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
   );
 }
 
 function LoadsTable({ loads }: { loads: LoadAgg[] }) {
   const [openId, setOpenId] = useState<number>(0);
   return (
-    <table>
-      <thead>
-        <tr>
-          <th>Дата</th>
-          <th>Док. дата</th>
-          <th>Док. №</th>
-          <th className="r">Артикули</th>
-          <th className="r">Стойност (без ДДС)</th>
-          <th className="r">С ДДС</th>
-        </tr>
-      </thead>
-      <tbody>
-        {loads.map((l) => (
-          <LoadRows key={l.id} l={l} open={openId === l.id} toggle={() => setOpenId(openId === l.id ? 0 : l.id)} />
-        ))}
-      </tbody>
-    </table>
+    <div className="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Дата</th>
+            <th>Док. дата</th>
+            <th>Док. №</th>
+            <th className="r">Артикули</th>
+            <th className="r">Стойност (без ДДС)</th>
+            <th className="r">С ДДС</th>
+          </tr>
+        </thead>
+        <tbody>
+          {loads.map((l) => (
+            <LoadRows key={l.id} l={l} open={openId === l.id} toggle={() => setOpenId(openId === l.id ? 0 : l.id)} />
+          ))}
+        </tbody>
+      </table>
+    </div>
   );
 }
 
